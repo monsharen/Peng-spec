@@ -1,0 +1,169 @@
+# Triggered by peng-spec when the Gherkin specs change.
+# 1. Checks out both repos
+# 2. Analyzes what changed in the spec
+# 3. Runs Claude Code agent to implement changes
+# 4. Runs Gherkin tests (behave) against the implementation
+# 5. Creates a PR if tests pass
+
+name: "Spec Agent → Implement & Test"
+
+on:
+  repository_dispatch:
+    types: [spec-changed]
+
+  # Allow manual trigger for testing the pipeline
+  workflow_dispatch:
+    inputs:
+      spec_sha:
+        description: "Spec commit SHA to implement from"
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  implement:
+    name: Agent – analyze, implement, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # --- Checkout both repos side by side ---
+      - name: Checkout peng (implementation)
+        uses: actions/checkout@v4
+        with:
+          path: peng
+
+      - name: Checkout peng-spec (specification)
+        uses: actions/checkout@v4
+        with:
+          repository: monsharen/Peng-spec
+          ref: ${{ github.event.client_payload.spec_ref || 'main' }}
+          path: peng-spec
+
+      # --- Setup ---
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: |
+          pip install behave pyyaml
+
+      # --- Analyze spec diff ---
+      - name: Analyze spec changes
+        working-directory: peng-spec
+        run: |
+          BEFORE="${{ github.event.client_payload.before_sha || 'HEAD~1' }}"
+          AFTER="${{ github.event.client_payload.spec_sha || 'HEAD' }}"
+          python3 agent/analyze-diff.py "$BEFORE" "$AFTER" .
+          mv spec-diff.md ../spec-diff.md
+          echo "--- Spec Diff ---"
+          cat ../spec-diff.md
+
+      # --- Run Claude Code agent ---
+      - name: Run implementation agent
+        working-directory: peng
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Install Claude Code
+          npm install -g @anthropic-ai/claude-code
+
+          # Create a branch for the agent's changes
+          BRANCH="agent/spec-$(date +%Y%m%d-%H%M%S)"
+          git checkout -b "$BRANCH"
+
+          # Run agent with the spec diff as context
+          claude --print \
+            --allowedTools "Edit,Write,Bash,Read,Glob,Grep" \
+            "$(cat <<PROMPT
+          Du är Peng-agenten. Läs instruktionerna i ../peng-spec/agent/AGENT.md.
+
+          Spec-repot finns i ../peng-spec/ (READONLY).
+          Implementationsrepot (detta repo) finns i ./
+
+          Här är analysen av vad som ändrats i specen:
+
+          $(cat ../spec-diff.md)
+
+          Analysera ändringarna, implementera det som behövs, och se till
+          att step definitions finns i tests/steps/ så att behave kan köra
+          feature-filerna från peng-spec.
+
+          Behave-konfigurationen pekar på ../peng-spec/features/ som feature-katalog.
+          PROMPT
+          )"
+
+          # Stage agent's changes
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes made by agent"
+          else
+            git commit -m "feat: implement spec changes from ${{ github.event.client_payload.spec_sha || 'HEAD' }}
+
+          Chain hash: ${{ github.event.client_payload.chain_hash || 'manual' }}
+          Triggered by: ${{ github.event.client_payload.triggered_by || 'workflow_dispatch' }}"
+          fi
+
+      # --- Run Gherkin tests ---
+      - name: Run Gherkin tests
+        working-directory: peng
+        run: |
+          behave ../peng-spec/features/ \
+            --no-capture \
+            --format pretty \
+            --junit \
+            --junit-directory test-results/
+        continue-on-error: true
+        id: tests
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gherkin-test-results
+          path: peng/test-results/
+
+      # --- Create PR ---
+      - name: Create pull request
+        if: steps.tests.outcome == 'success'
+        working-directory: peng
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH=$(git branch --show-current)
+          if [ "$BRANCH" = "main" ]; then
+            echo "On main, no PR needed"
+            exit 0
+          fi
+
+          git push -u origin "$BRANCH"
+
+          gh pr create \
+            --title "feat: implement spec changes (${{ github.event.client_payload.spec_sha || 'manual' }})" \
+            --body "$(cat <<'EOF'
+          ## Spec-driven implementation
+
+          This PR was created by the Peng agent in response to spec changes
+          in [Peng-spec](https://github.com/monsharen/Peng-spec).
+
+          **Spec SHA:** `${{ github.event.client_payload.spec_sha || 'manual' }}`
+          **Chain hash:** `${{ github.event.client_payload.chain_hash || 'n/a' }}`
+
+          ### Test results
+          Gherkin tests: **passed**
+
+          ---
+          *Auto-generated by the Peng spec agent*
+          EOF
+          )"
+
+      - name: Report test failure
+        if: steps.tests.outcome == 'failure'
+        run: |
+          echo "::error::Gherkin tests failed. Agent implementation does not satisfy spec."
+          echo "Review test-results/ artifact for details."
+          exit 1

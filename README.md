@@ -2,20 +2,43 @@
 
 Specifikationsrepo för **Peng**. Specs skrivs i Gherkin-format, organiserade
 per feature. En intent integrity chain kopplar ihop allt från syfte ner till
-testbara scenarios – och triggar automatiskt rebuild av Peng-repot vid ändringar.
+testbara scenarios – och en agent implementerar automatiskt ändringarna i
+[Peng](https://github.com/monsharen/Peng)-repot.
+
+## Pipeline
+
+```
+ peng-spec (detta repo)                    peng (implementation)
+ ──────────────────────                    ─────────────────────
+ 1. Du ändrar .feature-filer
+ 2. Push till main
+ 3. CI validerar intent chain
+ 4. CI dispatchar spec-changed ──────────► 5. Agent väcks
+                                           6. Analyserar spec-diff
+                                           7. Implementerar ändringar
+                                           8. Kör Gherkin-tester ◄── features/
+                                           9. Skapar PR om tester passerar
+```
 
 ## Struktur
 
 ```
 peng.spec.yaml                    ← Manifest: intent-träd + build-config
 features/
-  feature-001-example.feature     ← Gherkin-spec med förklaring + scenarios
+  feature-001-example.feature     ← Gherkin: taggar + förklaring + scenarios
   feature-002-example.feature
+agent/
+  AGENT.md                        ← Instruktioner som agenten följer
+  analyze-diff.py                 ← Analyserar vilka features som ändrats
 schema/
   intent-chain.schema.json        ← JSON Schema för manifestet
 verify-chain.py                   ← Lokal verifiering av kedjan
-.github/workflows/
-  on-spec-change.yml              ← CI: validera + dispatcha rebuild
+peng-repo-template/               ← Filer att kopiera till peng-repot
+  .github/workflows/
+    on-spec-dispatch.yml          ← Tar emot dispatch, kör agent + tester
+  CLAUDE.md                       ← Agent-kontext för peng-repot
+  behave.ini                      ← Testrunnerkonfig
+  tests/steps/                    ← Step definitions (Given/When/Then → kod)
 ```
 
 ## Hur en feature-fil ser ut
@@ -24,7 +47,7 @@ verify-chain.py                   ← Lokal verifiering av kedjan
 @intent-feature-001 @parent:intent-root @status:draft
 Feature: Kortfattat namn
 
-  Här skriver du VARFÖR denna feature finns. Vilken nytta
+  Här skrivs VARFÖR denna feature finns. Vilken nytta
   ger den? Vilket problem löser den? Denna text är kärnan
   i intent integrity chain – den förklarar avsikten.
 
@@ -49,14 +72,7 @@ Feature: Kortfattat namn
 1. **Skapa/ändra** en `.feature`-fil under `features/`
 2. **Registrera** den i `peng.spec.yaml` under `intents:`
 3. **Verifiera** lokalt: `python3 verify-chain.py`
-4. **Push till main** → CI validerar + dispatchar `spec-changed` till Peng-repot
-
-## Lokal verifiering
-
-```bash
-pip install pyyaml
-python3 verify-chain.py
-```
+4. **Push till main** → CI validerar → dispatchar till peng → agent implementerar
 
 ## Lägga till en ny feature
 
@@ -70,28 +86,28 @@ python3 verify-chain.py
        children: []
    ```
 3. Lägg till `intent-feature-NNN` i parentens `children`-lista
-4. Kör `python3 verify-chain.py` för att säkerställa att kedjan hänger ihop
+4. Kör `python3 verify-chain.py`
+5. Pusha – agenten tar över
 
-## Agent-setup (Peng-repo)
+## Setup – peng-repo
 
-Lägg till denna workflow i Peng-repot för att fånga dispatch-eventet:
+1. Skapa repot `monsharen/Peng`
+2. Kopiera innehållet i `peng-repo-template/` till repot
+3. Lägg till secrets i **peng-repot**:
+   - `ANTHROPIC_API_KEY` – för Claude Code-agenten
+4. Lägg till secrets i **peng-spec-repot**:
+   - `PENG_REPO_TOKEN` – GitHub PAT med `repo` scope
 
-```yaml
-# .github/workflows/on-spec-dispatch.yml
-name: "Build from spec"
-on:
-  repository_dispatch:
-    types: [spec-changed]
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: echo "Spec changed – hash ${{ github.event.client_payload.chain_hash }}"
-      - run: npm install && npm run build && npm test
+## Lokal verifiering
+
+```bash
+pip install pyyaml
+python3 verify-chain.py
 ```
 
-## Secrets
+## Lokal testning (i peng-repot)
 
-Skapa en GitHub Personal Access Token med `repo`-scope och lägg till som
-`PENG_REPO_TOKEN` i peng-spec-repots secrets (Settings → Secrets → Actions).
+```bash
+pip install behave
+behave ../peng-spec/features/
+```

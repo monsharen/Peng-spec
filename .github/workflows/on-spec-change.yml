@@ -34,11 +34,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # Need parent commit for diff analysis
 
-      - name: Compute chain hash
-        id: hash
+      - name: Compute chain hash and detect previous SHA
+        id: meta
         run: |
           pip install pyyaml
+
           HASH=$(python3 -c "
           import hashlib, yaml
           from pathlib import Path
@@ -53,6 +56,13 @@ jobs:
           echo "chain_hash=$HASH" >> "$GITHUB_OUTPUT"
           echo "Chain hash: $HASH"
 
+          BEFORE=$(git rev-parse HEAD~1 2>/dev/null || echo "0000000000000000000000000000000000000000")
+          echo "before_sha=$BEFORE" >> "$GITHUB_OUTPUT"
+          echo "Before SHA: $BEFORE"
+
+          # List changed features for logging
+          git diff --name-only HEAD~1 HEAD -- 'features/*.feature' || true
+
       - name: Dispatch to Peng repo
         uses: peter-evans/repository-dispatch@v3
         with:
@@ -64,6 +74,7 @@ jobs:
               "spec_repo": "${{ github.repository }}",
               "spec_sha": "${{ github.sha }}",
               "spec_ref": "${{ github.ref }}",
-              "chain_hash": "${{ steps.hash.outputs.chain_hash }}",
+              "before_sha": "${{ steps.meta.outputs.before_sha }}",
+              "chain_hash": "${{ steps.meta.outputs.chain_hash }}",
               "triggered_by": "${{ github.actor }}"
             }
