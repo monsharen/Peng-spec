@@ -1,0 +1,73 @@
+# Triggered when the intent integrity chain spec changes.
+# Dispatches a rebuild to the Peng implementation repo.
+
+name: "Intent Chain → Dispatch Build"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "peng.spec.yaml"
+      - "intents/**"
+  pull_request:
+    paths:
+      - "peng.spec.yaml"
+      - "intents/**"
+
+jobs:
+  validate-spec:
+    name: Validate intent chain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          npm install -g ajv-cli js-yaml
+          pip install pyyaml
+
+      - name: Validate spec against schema
+        run: |
+          python3 -c "
+          import yaml, json, sys
+          with open('peng.spec.yaml') as f:
+              spec = yaml.safe_load(f)
+          # Check all parent references are valid
+          ids = {i['id'] for i in spec['chain']}
+          for intent in spec['chain']:
+              if 'parent' in intent and intent['parent'] not in ids:
+                  print(f'ERROR: {intent[\"id\"]} references unknown parent {intent[\"parent\"]}')
+                  sys.exit(1)
+              for child in intent.get('children', []):
+                  if child not in ids:
+                      print(f'ERROR: {intent[\"id\"]} references unknown child {child}')
+                      sys.exit(1)
+          print('Intent chain integrity: OK')
+          "
+
+      - name: Compute chain hash
+        id: hash
+        run: |
+          HASH=$(sha256sum peng.spec.yaml | cut -d' ' -f1)
+          echo "chain_hash=$HASH" >> "$GITHUB_OUTPUT"
+          echo "Chain hash: $HASH"
+
+  dispatch-build:
+    name: Trigger Peng rebuild
+    needs: validate-spec
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch to Peng repo
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.PENG_REPO_TOKEN }}
+          repository: monsharen/Peng
+          event-type: spec-changed
+          client-payload: |
+            {
+              "spec_repo": "${{ github.repository }}",
+              "spec_sha": "${{ github.sha }}",
+              "spec_ref": "${{ github.ref }}",
+              "triggered_by": "${{ github.actor }}"
+            }
