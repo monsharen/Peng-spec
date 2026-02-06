@@ -1,5 +1,5 @@
-# Triggered when the intent integrity chain spec changes.
-# Dispatches a rebuild to the Peng implementation repo.
+# Triggered when Gherkin feature specs or the manifest changes.
+# Validates the intent integrity chain, then dispatches a rebuild to Peng.
 
 name: "Intent Chain → Dispatch Build"
 
@@ -8,11 +8,11 @@ on:
     branches: [main]
     paths:
       - "peng.spec.yaml"
-      - "intents/**"
+      - "features/**/*.feature"
   pull_request:
     paths:
       - "peng.spec.yaml"
-      - "intents/**"
+      - "features/**/*.feature"
 
 jobs:
   validate-spec:
@@ -22,35 +22,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: |
-          npm install -g ajv-cli js-yaml
-          pip install pyyaml
+        run: pip install pyyaml
 
-      - name: Validate spec against schema
-        run: |
-          python3 -c "
-          import yaml, json, sys
-          with open('peng.spec.yaml') as f:
-              spec = yaml.safe_load(f)
-          # Check all parent references are valid
-          ids = {i['id'] for i in spec['chain']}
-          for intent in spec['chain']:
-              if 'parent' in intent and intent['parent'] not in ids:
-                  print(f'ERROR: {intent[\"id\"]} references unknown parent {intent[\"parent\"]}')
-                  sys.exit(1)
-              for child in intent.get('children', []):
-                  if child not in ids:
-                      print(f'ERROR: {intent[\"id\"]} references unknown child {child}')
-                      sys.exit(1)
-          print('Intent chain integrity: OK')
-          "
-
-      - name: Compute chain hash
-        id: hash
-        run: |
-          HASH=$(sha256sum peng.spec.yaml | cut -d' ' -f1)
-          echo "chain_hash=$HASH" >> "$GITHUB_OUTPUT"
-          echo "Chain hash: $HASH"
+      - name: Verify intent integrity chain
+        run: python3 verify-chain.py
 
   dispatch-build:
     name: Trigger Peng rebuild
@@ -58,6 +33,26 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute chain hash
+        id: hash
+        run: |
+          pip install pyyaml
+          HASH=$(python3 -c "
+          import hashlib, yaml
+          from pathlib import Path
+          spec = yaml.safe_load(open('peng.spec.yaml'))
+          h = hashlib.sha256(Path('peng.spec.yaml').read_bytes())
+          for iid in sorted(spec.get('intents', {})):
+              f = spec['intents'][iid].get('file')
+              if f and Path(f).exists():
+                  h.update(Path(f).read_bytes())
+          print(h.hexdigest())
+          ")
+          echo "chain_hash=$HASH" >> "$GITHUB_OUTPUT"
+          echo "Chain hash: $HASH"
+
       - name: Dispatch to Peng repo
         uses: peter-evans/repository-dispatch@v3
         with:
@@ -69,5 +64,6 @@ jobs:
               "spec_repo": "${{ github.repository }}",
               "spec_sha": "${{ github.sha }}",
               "spec_ref": "${{ github.ref }}",
+              "chain_hash": "${{ steps.hash.outputs.chain_hash }}",
               "triggered_by": "${{ github.actor }}"
             }

@@ -1,107 +1,49 @@
-# Peng – Intent Integrity Chain Specification
-# ===========================================
-# This file is the single source of truth for what Peng should be.
-# Every intent links to child intents forming a traceable chain.
-# When any intent changes, downstream implementation must be re-verified.
+# Peng – Intent Integrity Chain Manifest
+# =======================================
+# This manifest registers all Gherkin feature files and defines
+# the intent hierarchy. The actual specs live in features/*.feature.
 #
-# The chain guarantees: Purpose → Features → Behavior → Contracts → Verification
-# If a link breaks, the agent flags it and triggers a rebuild.
+# Flow: edit features → verify-chain.py → push → CI validates → dispatch rebuild
 
 version: "1.0"
 spec_name: peng
 repository: monsharen/Peng
 
-# --- Intent Integrity Chain ---
+# --- Intent Tree ---
+# Maps intent IDs to their Gherkin feature files.
+# Tags inside each .feature file encode: @<intent-id> @parent:<id> @status:<status>
 
-chain:
-
-  # Level 0: Root intent – WHY does Peng exist?
-  - id: intent-root
-    level: 0
+intents:
+  intent-root:
     title: "Peng – Core Purpose"
     description: >
       Define the top-level purpose of the Peng project here.
-      This is the anchor of the entire integrity chain.
-      All downstream intents must trace back to this root.
-    status: draft
-    acceptance_criteria:
-      - "The system fulfils the core purpose described here"
+      All features must trace back to this root intent.
     children:
       - intent-feature-001
       - intent-feature-002
 
-  # Level 1: Feature intents – WHAT capabilities are needed?
-  - id: intent-feature-001
-    level: 1
+  intent-feature-001:
+    file: features/feature-001-example.feature
     parent: intent-root
-    title: "Feature 1 – [Name]"
-    description: >
-      Describe the first major feature or capability here.
-    status: draft
-    acceptance_criteria:
-      - "Criterion 1"
-      - "Criterion 2"
-    children:
-      - intent-behavior-001
-
-  - id: intent-feature-002
-    level: 1
-    parent: intent-root
-    title: "Feature 2 – [Name]"
-    description: >
-      Describe the second major feature or capability here.
-    status: draft
-    acceptance_criteria:
-      - "Criterion 1"
     children: []
 
-  # Level 2: Behavioral specs – HOW should each feature behave?
-  - id: intent-behavior-001
-    level: 2
-    parent: intent-feature-001
-    title: "Behavior – [Name]"
-    description: >
-      Describe the expected behavior in detail.
-      Include edge cases and error scenarios.
-    status: draft
-    acceptance_criteria:
-      - "Given X, when Y, then Z"
-    contracts:
-      - intent-contract-001
+  intent-feature-002:
+    file: features/feature-002-example.feature
+    parent: intent-root
+    children: []
 
-  # Level 3: Contracts – WHAT interfaces connect spec to implementation?
-  - id: intent-contract-001
-    level: 3
-    parent: intent-behavior-001
-    title: "Contract – [API/Interface Name]"
-    description: >
-      Define the interface, API, data structures, or protocol
-      that the implementation must expose.
-    status: draft
-    interface: |
-      # Example: function signature, API endpoint, message format, etc.
-      # fn example(input: Input) -> Output
-    verification:
-      type: test
-      command: "echo 'replace with actual test command'"
-
-# --- Integrity Metadata ---
-# The agent computes these hashes to detect when the chain has changed.
-# On any change, a rebuild of the peng repo is triggered.
-
+# --- Integrity ---
 integrity:
   algorithm: sha256
-  chain_hash: "PENDING"  # Computed by the agent on each commit
+  chain_hash: "PENDING"
   last_verified: null
-  last_build_trigger: null
 
 # --- Build Dispatch ---
-# Configuration for triggering the peng repo build.
-
 build:
   target_repo: monsharen/Peng
   trigger_on:
     - "peng.spec.yaml"
-    - "intents/**/*.yaml"
-  build_command: "npm run build"  # Adjust to actual build command
-  test_command: "npm test"        # Adjust to actual test command
+    - "features/**/*.feature"
+  build_command: "npm run build"
+  test_command: "npm test"
